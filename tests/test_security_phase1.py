@@ -400,3 +400,42 @@ def test_netguard_says_why(monkeypatch):
     assert blocked_target("https://api.anthropic.com", resolve=lambda *a, **k: PUBLIC_IP) is None
     assert "could not be found" in blocked_target("https://no-such-host.invalid", resolve=lambda *a, **k: (_ for _ in ()).throw(OSError("nx")))
     assert "loopback" in blocked_target("http://localhost:11434", resolve=resolver("127.0.0.1"))
+
+
+def test_netguard_remaining_cases():
+    from erp_agents.core.netguard import blocked_target, no_redirects
+
+    # an address with no host name
+    assert blocked_target("http://") == "the address has no host name"
+
+    # a resolver entry that cannot be read is skipped (a readable one remains)
+    assert "private" in blocked_target(
+        "https://example.com", resolve=lambda *a, **k: [(2, 1, 6, ""), (2, 1, 6, "", ("10.0.0.5", 0))]
+    )
+
+    # IP literals
+    link_local_ip = "169.254.169.254"
+    assert "link-local" in blocked_target("http://" + link_local_ip + "/")
+    assert "private" in blocked_target("http://10.0.0.5:11434")
+
+    # IPv4-mapped IPv6 counts as loopback
+    assert "loopback" in blocked_target("http://[::ffff:127.0.0.1]:11434")
+
+    # a name resolving to two addresses, one public and one private: refused
+    assert "private" in blocked_target("https://mixed.example", resolve=resolver("93.184.216.34", "10.0.0.5"))
+
+    # the refuse argument: with refuse=("link-local",) loopback is allowed and link-local is not
+    assert blocked_target("http://127.0.0.1:11434", refuse=("link-local",)) is None
+    assert "link-local" in blocked_target("http://" + link_local_ip + "/", refuse=("link-local",))
+
+    # no_redirects: an object that refuses the attribute (empty __slots__) does not raise
+    class Slotless:
+        __slots__ = ()
+
+    obj = Slotless()
+    assert no_redirects(obj) is obj
+
+    # name whose entries are all unreadable -> could not be found
+    assert "could not be found" in blocked_target(
+        "https://allbad.example", resolve=lambda *a, **k: [(2, 1, 6, ""), (2, 1, 6, "")]
+    )
